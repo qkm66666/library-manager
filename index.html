@@ -227,31 +227,47 @@
     <script>
         // 替换模拟数据库的部分，改为通过后端 API 获取数据
         let booksDatabase = [];
-        let apiBaseUrl = "http://localhost:8080/api/books"; // 后端 API 地址
+        let apiBaseUrl = "http://127.0.0.1:8080/api/books"; // 后端 API 地址
 
         // 加载图书列表
         function loadBooks() {
-            document.getElementById('loadingMessage').style.display = 'block';
-            fetch(apiBaseUrl)
-                .then(response => response.json())
-                .then(data => {
-                    booksDatabase = data;
-                    filteredBooks = [...booksDatabase];
-                    renderBooks();
-                    updateStats();
-                    document.getElementById('loadingMessage').style.display = 'none';
-                })
-                .catch(error => {
-                    console.error("加载图书失败:", error);
-                    document.getElementById('loadingMessage').style.display = 'none';
-                });
+            const loadingElement = document.getElementById('loadingMessage');
+            
+            // 先检查元素是否存在
+            if (!loadingElement) {
+                console.error("错误：找不到loadingMessage元素");
+                return;
+            }
+
+            try {
+                loadingElement.style.display = 'block';
+                
+                fetch(apiBaseUrl)
+                    .then(response => response.json())
+                    .then(data => {
+                        booksDatabase = data.data || []; // 处理可能的undefined
+                        filteredBooks = [...booksDatabase];
+                        renderBooks();
+                        updateStats();
+                    })
+                    .catch(error => {
+                        console.error("加载图书失败:", error);
+                    })
+                    .finally(() => {
+                        // 再次检查元素是否存在
+                        if (loadingElement) {
+                            loadingElement.style.display = 'none';
+                        }
+                    });
+            } catch (error) {
+                console.error("初始化错误:", error);
+            }
         }
 
         // 保存图书（添加或编辑）
         function saveBook(event) {
             event.preventDefault();
-
-            const bookId = document.getElementById('bookId').value;
+            
             const bookData = {
                 title: document.getElementById('title').value,
                 author: document.getElementById('author').value,
@@ -259,31 +275,40 @@
                 category: document.getElementById('category').value,
                 status: document.getElementById('status').value,
                 publishDate: document.getElementById('publishDate').value,
-                description: document.getElementById('description').value,
+                description: document.getElementById('description').value
             };
 
+            const bookId = document.getElementById('bookId').value;
             const method = bookId ? "PUT" : "POST";
             const url = bookId ? `${apiBaseUrl}/${bookId}` : apiBaseUrl;
-
-            fetch(url, {
-                method: method,
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(bookData),
+            fetch(apiBaseUrl, {
+                method: "POST",
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                Origin: 'http://localhost',
+                body: JSON.stringify(bookData)
             })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(() => {
-                    closeModal();
-                    loadBooks();
-                })
-                .catch(error => {
-                    console.error("保存图书失败:", error);
-                    alert("保存图书失败，请检查网络或后端服务！");
-                });
+            .then(response => {
+                console.log("收到响应:", response);
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        console.error("错误响应:", text);
+                        throw new Error(text);
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("操作成功:", data);
+                alert("保存成功!");
+                closeModal();
+                loadBooks();
+            })
+            .catch(error => {
+                console.error("操作失败:", error);
+                alert("保存失败: " + error.message);
+            });
         }
 
         // 删除图书
