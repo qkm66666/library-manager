@@ -281,26 +281,21 @@
             const bookId = document.getElementById('bookId').value;
             const method = bookId ? "PUT" : "POST";
             const url = bookId ? `${apiBaseUrl}/${bookId}` : apiBaseUrl;
-            fetch(apiBaseUrl, {
-                method: "POST",
+            
+            fetch(url, {
+                method: method,
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                Origin: 'http://localhost',
                 body: JSON.stringify(bookData)
             })
             .then(response => {
-                console.log("收到响应:", response);
                 if (!response.ok) {
-                    return response.text().then(text => {
-                        console.error("错误响应:", text);
-                        throw new Error(text);
-                    });
+                    return response.text().then(text => { throw new Error(text) });
                 }
                 return response.json();
             })
             .then(data => {
-                console.log("操作成功:", data);
                 alert("保存成功!");
                 closeModal();
                 loadBooks();
@@ -360,6 +355,15 @@
 
         // 创建图书卡片
         function createBookCard(book) {
+
+            book.title = book.title || '无标题';
+            book.author = book.author || '未知作者';
+            book.isbn = book.isbn || '无ISBN';
+            book.category = book.category || '未分类';
+            book.status = book.status || '未知状态';
+            book.publishDate = book.publishDate || '未知日期';
+            book.description = book.description || '暂无简介';
+
             let statusClass = 'bg-green-100 text-green-800';
             if (book.status === '已借出') {
                 statusClass = 'bg-red-100 text-red-800';
