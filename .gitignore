@@ -17,3 +17,4 @@ cmake_install.cmake
 # 临时文件
 *.log
 *.tmp
+*.exe

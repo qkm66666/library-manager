@@ -232,7 +232,9 @@ int main() {
             int rc = sqlite3_step(stmt);
             sqlite3_finalize(stmt);
             if (rc == SQLITE_DONE && sqlite3_changes(db) > 0) {
-                auto res = crow::response(200);
+                crow::json::wvalue result;
+                result["message"] = "图书添加成功";
+                auto res = crow::response(200, result);
                 return res;
             }
             auto res = crow::response(404);
