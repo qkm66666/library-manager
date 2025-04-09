@@ -171,7 +171,6 @@
                             <option value="哲学">哲学</option>
                             <option value="艺术">艺术</option>
                             <option value="教育">教育</option>
-                            <option value="小说">小说</option>
                         </select>
                     </div>
                     <div class="mb-4">
@@ -230,7 +229,7 @@
         let apiBaseUrl = "http://127.0.0.1:8080/api/books"; // 后端 API 地址
         
         // 加载图书列表
-        function loadBooks() {
+        async function loadBooks() {
             const booksContainer = document.getElementById('booksContainer');
             
             // 创建或显示加载消息
@@ -250,43 +249,27 @@
             }
             
             try {
-                fetch(apiBaseUrl)
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error("无法加载图书数据");
-                        }
-                        return response.json();
-                    })
-                    .then(data => {
-                        console.log("加载的图书数据:", data);
-                        booksDatabase = data.data || [];
-                        filteredBooks = [...booksDatabase];
-                        renderBooks();
-                        updateStats();
-                    })
-                    .catch(error => {
-                        console.error("加载图书失败:", error);
-                        // 显示错误信息
-                        if (loadingElement) {
-                            loadingElement.innerHTML = `
-                                <i class="fas fa-exclamation-triangle text-3xl mb-2 text-red-500"></i>
-                                <p>加载失败: ${error.message}</p>
-                            `;
-                        }
-                    })
-                    .finally(() => {
-                        // 隐藏加载消息
-                        if (loadingElement) {
-                            loadingElement.style.display = 'none';
-                        }
-                    });
+                const response = await fetch(apiBaseUrl);
+                if (!response.ok) {
+                    throw new Error("无法加载图书数据");
+                }
+                const data = await response.json();
+                console.log("加载的图书数据:", data);
+                booksDatabase = data.data || [];
+                filteredBooks = [...booksDatabase];
+                renderBooks();
+                updateStats();
             } catch (error) {
-                console.error("初始化错误:", error);
+            console.error("加载图书失败:", error);
+            if (loadingElement) {
+                loadingElement.innerHTML = `
+                <i class="fas fa-exclamation-triangle text-3xl mb-2 text-red-500"></i>
+                <p>加载失败: ${error.message}</p>
+                `;
+            }
+            } finally {
                 if (loadingElement) {
-                    loadingElement.innerHTML = `
-                        <i class="fas fa-exclamation-triangle text-3xl mb-2 text-red-500"></i>
-                        <p>初始化错误: ${error.message}</p>
-                    `;
+                    loadingElement.style.display = 'none';
                 }
             }
         }
