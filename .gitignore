@@ -3,6 +3,7 @@ build/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+release/
 
 # Visual Studio 相关
 *.vcxproj*
@@ -18,3 +19,5 @@ cmake_install.cmake
 *.log
 *.tmp
 *.exe
+
+*.zip
