@@ -12,6 +12,7 @@ include_directories(D:/vcpkg/installed/x64-windows/include)
 link_directories(D:/vcpkg/installed/x64-windows/lib)
 
 
+
 # Add source files
 set(SOURCES
     server.cpp
@@ -20,12 +21,18 @@ set(SOURCES
 # Add executable target
 add_executable(LibraryManager ${SOURCES})
 
-# Use vcpkg to find Crow and OpenSSL
+# Use vcpkg to find dependencies
 find_package(Crow CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(nanodbc CONFIG REQUIRED)
 
-# Link Crow, OpenSSL, and SQLite3
-target_link_libraries(LibraryManager PRIVATE Crow::Crow OpenSSL::SSL OpenSSL::Crypto sqlite3)
+# Link libraries
+target_link_libraries(LibraryManager PRIVATE 
+    Crow::Crow 
+    OpenSSL::SSL 
+    OpenSSL::Crypto 
+    nanodbc
+)
 
 # Enable warnings for better code quality
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

@@ -21,3 +21,15 @@ release/
 *.exe
 
 *.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+venv/
+env/
+
+# Config files
+config.py

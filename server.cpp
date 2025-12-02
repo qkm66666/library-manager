@@ -1,9 +1,75 @@
 #include <crow.h>
-#include <sqlite3.h>
+#include <nanodbc/nanodbc.h>
 #include <string>
 #include <mutex>
 #include <iostream>
+#include <vector>
+#include <memory>
+#include <windows.h>
 #include <locale>
+#include <codecvt>
+
+// Helper function to convert UTF-8 std::string to std::wstring
+std::wstring utf8_to_wstring(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+    std::wstring wstrTo(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    return wstrTo;
+}
+
+// Helper function to convert std::wstring to UTF-8 std::string
+std::string wstring_to_utf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
+// Database connection string for SQL Server
+// IMPORTANT: 
+// 1. Make sure "ODBC Driver 17 for SQL Server" is installed on your system.
+// 2. Change Server, UID, and PWD to match your SQL Server configuration.
+const nanodbc::string connection_string = NANODBC_TEXT("Driver={ODBC Driver 17 for SQL Server};Server=localhost;Database=JY;UID=sa;PWD=Eld_4ever;");
+
+// A simple connection pool
+class ConnectionPool {
+public:
+    ConnectionPool(const nanodbc::string& conn_str, size_t size) : connection_string_(conn_str) {
+        for (size_t i = 0; i < size; ++i) {
+            try {
+                pool_.push_back(std::make_unique<nanodbc::connection>(connection_string_));
+            } catch (const nanodbc::database_error& e) {
+                std::cerr << "Error creating connection for pool: " << e.what() << std::endl;
+            }
+        }
+    }
+
+    std::unique_ptr<nanodbc::connection> get_connection() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pool_.empty()) {
+            // Or wait, or throw an exception
+            return std::make_unique<nanodbc::connection>(connection_string_);
+        }
+        auto conn = std::move(pool_.back());
+        pool_.pop_back();
+        return conn;
+    }
+
+    void return_connection(std::unique_ptr<nanodbc::connection> conn) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pool_.push_back(std::move(conn));
+    }
+
+private:
+    std::mutex mutex_;
+    nanodbc::string connection_string_;
+    std::vector<std::unique_ptr<nanodbc::connection>> pool_;
+};
+
+// Global connection pool
+std::unique_ptr<ConnectionPool> db_pool;
 
 
 struct CORSHandler {
@@ -14,7 +80,7 @@ struct CORSHandler {
         res.add_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         res.add_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
         
-        // 处理 OPTIONS 请求，直接返回 204
+        // Handle OPTIONS requests, return 204 directly
         if (req.method == crow::HTTPMethod::OPTIONS) {
             res.code = 204;
             res.end();
@@ -22,256 +88,207 @@ struct CORSHandler {
     }
 
     void after_handle(crow::request&, crow::response& res, context&) {
-        // 确保所有响应都包含 CORS 头
+        // Ensure all responses include CORS headers
         res.add_header("Access-Control-Allow-Origin", "*");
         res.add_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         res.add_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
     }
 };
 
-// 全局互斥锁
-std::mutex dbMutex;
-// 全局 SQLite 连接
-sqlite3* db = nullptr;
-
-// 初始化数据库，创建表
+// Initialize database connection pool
 bool initDatabase() {
-    char* errMsg = nullptr;
-    const char* createTableSQL =
-        "CREATE TABLE IF NOT EXISTS books ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "title TEXT NOT NULL DEFAULT '',"
-        "author TEXT NOT NULL DEFAULT '',"
-        "isbn TEXT NOT NULL DEFAULT '',"
-        "category TEXT NOT NULL DEFAULT '',"
-        "status TEXT NOT NULL DEFAULT '可借阅',"
-        "publishDate TEXT NOT NULL DEFAULT '',"
-        "description TEXT NOT NULL DEFAULT '');";
-
-    if (sqlite3_exec(db, createTableSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
-        sqlite3_free(errMsg);
+    try {
+        db_pool = std::make_unique<ConnectionPool>(connection_string, 5); // Pool with 5 connections
+        // Test getting a connection
+        auto conn = db_pool->get_connection();
+        if (conn && conn->connected()) {
+            std::cout << "Database connection pool created successfully." << std::endl;
+            db_pool->return_connection(std::move(conn));
+            return true;
+        }
+    } catch (const nanodbc::database_error& e) {
+        std::cerr << "Database connection failed: " << e.what() << std::endl;
         return false;
     }
-    return true;
+    return false;
 }
 
-
 int main() {
-    // 设置控制台编码为 UTF-8
-    SetConsoleOutputCP(CP_UTF8);
-    
-    std::cout << "中文测试" << std::endl;
-    crow::App<CORSHandler> app; 
+    crow::App<CORSHandler> app;
+    app.loglevel(crow::LogLevel::Debug);
 
-    // 添加在 main() 函数开头
-    app.loglevel(crow::LogLevel::Debug);  // 启用调试日志
-
-    
-
-    // 打开数据库
-    if (sqlite3_open("library.db", &db) != SQLITE_OK || !db) {
-        std::cerr << "无法打开数据库: " << sqlite3_errmsg(db) << std::endl;
-        return -1;
-    }
     if (!initDatabase()) {
-        std::cerr << "无法初始化数据库: " << sqlite3_errmsg(db) << std::endl;
         return -1;
     }
 
-    // 检查数据库是否可读写
-    if (sqlite3_exec(db, "SELECT count(*) FROM sqlite_master;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        std::cerr << "数据库访问测试失败: " << sqlite3_errmsg(db) << std::endl;
-        sqlite3_close(db);
-        return -1;
-    }
-
-    // 获取所有图书
+    // Get all books
     CROW_ROUTE(app, "/api/books").methods("GET"_method)([]() {
-        std::lock_guard<std::mutex> lock(dbMutex);
-        
-        if (!db) {
-            return crow::response(500);
+        CROW_LOG_INFO << "Received request for GET /api/books";
+        try {
+            auto conn = db_pool->get_connection();
+            if (!conn || !conn->connected()) {
+                CROW_LOG_ERROR << "Failed to get a valid database connection from pool.";
+                return crow::response(500, "Failed to get database connection.");
+            }
+
+            auto result = nanodbc::execute(*conn, NANODBC_TEXT("SELECT book_id, book_name, book_isbn, book_author, book_publisher, interview_times, book_price FROM book"));
+
+            std::vector<crow::json::wvalue> booksArray;
+            long long count = 0;
+            while (result.next()) {
+                count++;
+                crow::json::wvalue book;
+                
+                nanodbc::string book_id_w = result.get<nanodbc::string>(0);
+                book["book_id"] = wstring_to_utf8(book_id_w);
+
+                nanodbc::string book_name_w = result.get<nanodbc::string>(1);
+                book["book_name"] = wstring_to_utf8(book_name_w);
+
+                nanodbc::string book_isbn_w = result.get<nanodbc::string>(2);
+                book["book_isbn"] = wstring_to_utf8(book_isbn_w);
+
+                nanodbc::string book_author_w = result.get<nanodbc::string>(3);
+                book["book_author"] = wstring_to_utf8(book_author_w);
+
+                nanodbc::string book_publisher_w = result.get<nanodbc::string>(4);
+                book["book_publisher"] = wstring_to_utf8(book_publisher_w);
+
+                book["interview_times"] = result.get<int>(5, 0);
+                book["book_price"] = result.get<double>(6, 0.0);
+                booksArray.push_back(std::move(book));
+            }
+            CROW_LOG_INFO << "Found " << count << " books in the database.";
+
+            db_pool->return_connection(std::move(conn));
+            crow::json::wvalue response;
+            response["data"] = std::move(booksArray);
+            return crow::response(response);
+        } catch (const nanodbc::database_error& e) {
+            CROW_LOG_ERROR << "Database query failed for GET /api/books: " << e.what();
+            return crow::response(500, "Database query failed: " + std::string(e.what()));
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "An unexpected error occurred in GET /api/books: " << e.what();
+            return crow::response(500, "An unexpected error occurred: " + std::string(e.what()));
         }
-    
-        std::vector<crow::json::wvalue> booksArray;
-        const char* selectSQL = "SELECT id, title, author, isbn, category, status, publishDate, description FROM books";
-        sqlite3_stmt* stmt = nullptr;
-    
-        if (!db || sqlite3_prepare_v2(db, selectSQL, -1, &stmt, nullptr) != SQLITE_OK) {
-            return crow::response(500, "数据库查询准备失败: " + std::string(sqlite3_errmsg(db)));
-        }
-    
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            crow::json::wvalue book;
-            
-            // 处理每一列，安全处理NULL值
-            book["id"] = sqlite3_column_int(stmt, 0);
-            
-            // 安全获取文本字段
-            auto safeGetText = [](sqlite3_stmt* stmt, int col) -> std::string {
-                const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
-                return text ? text : "";
-            };
-            
-            book["title"] = safeGetText(stmt, 1);
-            book["author"] = safeGetText(stmt, 2);
-            book["isbn"] = safeGetText(stmt, 3);
-            book["category"] = safeGetText(stmt, 4);
-            book["status"] = safeGetText(stmt, 5);
-            book["publishDate"] = safeGetText(stmt, 6);
-            book["description"] = safeGetText(stmt, 7);
-    
-            booksArray.push_back(std::move(book));
-        }
-    
-        sqlite3_finalize(stmt);
-    
-        crow::json::wvalue result;
-        result["data"] = std::move(booksArray);
-        return crow::response(result);
     });
 
-    // 添加新图书
+    // Add a new book
     CROW_ROUTE(app, "/api/books").methods("POST"_method)([](const crow::request& req) {
         auto body = crow::json::load(req.body);
-        if (!body) {
-            return crow::response(400, "无效的请求体");
+        if (!body) return crow::response(400, "Invalid request body");
+
+        // Field validation
+        const std::vector<std::string> required_fields = {"book_id", "book_name", "book_isbn", "book_author", "book_publisher"};
+        for (const auto& field : required_fields) {
+            if (!body.has(field)) {
+                return crow::response(400, "Missing required field: " + field);
+            }
         }
-        std::cerr << "收到 POST 请求, body: " << req.body << std::endl;
-        // 获取并验证所有必填字段
-        if (!body.has("title") || !body.has("author") || !body.has("isbn") || 
-            !body.has("category") || !body.has("status") || !body.has("publishDate")) {
-            return crow::response(400, "缺少必要字段");
-        }
-    
-        std::lock_guard<std::mutex> lock(dbMutex);
-    
-        const char* insertSQL = 
-            "INSERT INTO books (title, author, isbn, category, status, publishDate, description) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?);";
-    
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nullptr) != SQLITE_OK) {
-            return crow::response(500, "SQL准备失败");
-        }
-    
+
         try {
-            // 绑定参数
-            std::string title = body["title"].s();
-            sqlite3_bind_text(stmt, 1, title.c_str(), title.length(), SQLITE_TRANSIENT);
-    
-            std::string author = body["author"].s();
-            sqlite3_bind_text(stmt, 2, author.c_str(), author.length(), SQLITE_TRANSIENT);
-    
-            std::string isbn = body["isbn"].s();
-            sqlite3_bind_text(stmt, 3, isbn.c_str(), isbn.length(), SQLITE_TRANSIENT);
-    
-            std::string category = body["category"].s();
-            sqlite3_bind_text(stmt, 4, category.c_str(), category.length(), SQLITE_TRANSIENT);
-    
-            std::string status = body["status"].s();
-            sqlite3_bind_text(stmt, 5, status.c_str(), status.length(), SQLITE_TRANSIENT);
-    
-            std::string publishDate = body["publishDate"].s();
-            sqlite3_bind_text(stmt, 6, publishDate.c_str(), publishDate.length(), SQLITE_TRANSIENT);
-    
-            std::string description = body["description"].s();
-            sqlite3_bind_text(stmt, 7, description.c_str(), description.length(), SQLITE_TRANSIENT);
-    
-            // 执行插入
-            int rc = sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
+            auto conn = db_pool->get_connection();
+            nanodbc::statement stmt(*conn);
+            nanodbc::prepare(stmt, NANODBC_TEXT("INSERT INTO book (book_id, book_name, book_isbn, book_author, book_publisher, interview_times, book_price) VALUES (?, ?, ?, ?, ?, ?, ?)"));
 
-            // 获取新插入的图书ID
-            int newId = sqlite3_last_insert_rowid(db);
+            const auto book_id = utf8_to_wstring(body["book_id"].s());
+            const auto book_name = utf8_to_wstring(body["book_name"].s());
+            const auto book_isbn = utf8_to_wstring(body["book_isbn"].s());
+            const auto book_author = utf8_to_wstring(body["book_author"].s());
+            const auto book_publisher = utf8_to_wstring(body["book_publisher"].s());
+            int interview_times = body.has("interview_times") ? body["interview_times"].i() : 0;
+            double book_price = body.has("book_price") ? body["book_price"].d() : 0.0;
+
+            stmt.bind(0, book_id.c_str());
+            stmt.bind(1, book_name.c_str());
+            stmt.bind(2, book_isbn.c_str());
+            stmt.bind(3, book_author.c_str());
+            stmt.bind(4, book_publisher.c_str());
+            stmt.bind(5, &interview_times);
+            stmt.bind(6, &book_price);
+
+            nanodbc::execute(stmt);
+            
+            db_pool->return_connection(std::move(conn));
+            
             crow::json::wvalue result;
-            result["id"] = newId;
-            result["message"] = "图书添加成功";
+            result["message"] = "Book added successfully";
+            result["book_id"] = body["book_id"].s();
             return crow::response(201, result);
-    
-        } catch (const std::exception& e) {
-            if (stmt) sqlite3_finalize(stmt);
-            return crow::response(500, std::string("服务器错误: ") + e.what());
+        } catch (const nanodbc::database_error& e) {
+            return crow::response(500, "Database insert failed: " + std::string(e.what()));
         }
     });
 
-    // 编辑图书
-    CROW_ROUTE(app, "/api/books/<int>").methods("PUT"_method)([](const crow::request& req, int id) {
-        auto res = crow::response();
-        
+    // Edit a book
+    CROW_ROUTE(app, "/api/books/<string>").methods("PUT"_method)([](const crow::request& req, std::string book_id_str) {
         auto body = crow::json::load(req.body);
-        std::cout << "收到 PUT 请求, body: " << req.body << std::endl;
-        if (!body) {
-            std::cout << "??" << std::endl;
-            auto res = crow::response(400);
-            return res;
-        }
+        if (!body) return crow::response(400, "Invalid request body");
 
-        std::lock_guard<std::mutex> lock(dbMutex);
-        const char* updateSQL =
-            "UPDATE books SET title=?, author=?, isbn=?, category=?, status=?, publishDate=?, description=? "
-            "WHERE id=?;";
-        sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nullptr) == SQLITE_OK) {
-            std::string title = body["title"].s();
-            sqlite3_bind_text(stmt, 1, title.c_str(), title.length(), SQLITE_TRANSIENT);
-            std::string author = body["author"].s();
-            sqlite3_bind_text(stmt, 2, author.c_str(), author.length(), SQLITE_TRANSIENT);
-            std::string isbn = body["isbn"].s();
-            sqlite3_bind_text(stmt, 3, isbn.c_str(), isbn.length(), SQLITE_TRANSIENT);
-            std::string category = body["category"].s();
-            sqlite3_bind_text(stmt, 4, category.c_str(), category.length(), SQLITE_TRANSIENT);
-            std::string status = body["status"].s();
-            sqlite3_bind_text(stmt, 5, status.c_str(), status.length(), SQLITE_TRANSIENT);
-            std::string publishDate = body["publishDate"].s();
-            sqlite3_bind_text(stmt, 6, publishDate.c_str(), publishDate.length(), SQLITE_TRANSIENT);
-            std::string description = body["description"].s();
-            sqlite3_bind_text(stmt, 7, description.c_str(), description.length(), SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, 8, id);
+        try {
+            auto conn = db_pool->get_connection();
+            nanodbc::statement stmt(*conn);
+            nanodbc::prepare(stmt, NANODBC_TEXT("UPDATE book SET book_name=?, book_isbn=?, book_author=?, book_publisher=?, interview_times=?, book_price=? WHERE book_id=?"));
 
-            int rc = sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            if (rc == SQLITE_DONE && sqlite3_changes(db) > 0) {
-                crow::json::wvalue result;
-                result["message"] = "图书添加成功";
-                auto res = crow::response(200, result);
-                return res;
+            const auto book_name = body["book_name"].s();
+            const auto book_isbn = body["book_isbn"].s();
+            const auto book_author = body["book_author"].s();
+            const auto book_publisher = body["book_publisher"].s();
+            int interview_times = body["interview_times"].i();
+            double book_price = body["book_price"].d();
+            const auto book_id = book_id_str;
+
+            stmt.bind(0, book_name);
+            stmt.bind(1, book_isbn);
+            stmt.bind(2, book_author);
+            stmt.bind(3, book_publisher);
+            stmt.bind(4, &interview_times);
+            stmt.bind(5, &book_price);
+            stmt.bind(6, book_id);
+
+            auto result = nanodbc::execute(stmt);
+
+            db_pool->return_connection(std::move(conn));
+
+            if (result.affected_rows() == 0) {
+                return crow::response(404, "Book to update not found");
             }
-            auto res = crow::response(404);
-            return res;
+
+            crow::json::wvalue response_body;
+            response_body["message"] = "Book updated successfully";
+            return crow::response(200, response_body);
+        } catch (const nanodbc::database_error& e) {
+            return crow::response(500, "Database update failed: " + std::string(e.what()));
         }
-        res = crow::response(500);
-        return res;
     });
 
-    // 删除图书
-    CROW_ROUTE(app, "/api/books/<int>").methods("DELETE"_method)([](int id) {
-        auto res = crow::response();
-        
-        std::cout << "收到 DELETE 请求, id: " << id << std::endl;
+    // Delete a book
+    CROW_ROUTE(app, "/api/books/<string>").methods("DELETE"_method)([](std::string book_id_str) {
+        try {
+            auto conn = db_pool->get_connection();
+            nanodbc::statement stmt(*conn);
+            nanodbc::prepare(stmt, NANODBC_TEXT("DELETE FROM book WHERE book_id = ?"));
+            
+            const auto book_id = book_id_str;
+            stmt.bind(0, book_id);
 
-        std::lock_guard<std::mutex> lock(dbMutex);
-        const char* deleteSQL = "DELETE FROM books WHERE id=?;";
-        sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db, deleteSQL, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, id);
-            int rc = sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            if (rc == SQLITE_DONE && sqlite3_changes(db) > 0) {
-                auto res = crow::response(200);
-                return res;
+            auto result = nanodbc::execute(stmt);
+
+            db_pool->return_connection(std::move(conn));
+
+            if (result.affected_rows() == 0) {
+                return crow::response(404, "Book to delete not found");
             }
-            auto res = crow::response(404);
-            return res;
+
+            crow::json::wvalue response_body;
+            response_body["message"] = "Book deleted successfully";
+            return crow::response(200, response_body);
+        } catch (const nanodbc::database_error& e) {
+            return crow::response(500, "Database delete failed: " + std::string(e.what()));
         }
-        res = crow::response(500);
-        return res;
     });
 
-    // 启动服务
     app.port(8080).multithreaded().run();
 
-    // 关闭数据库
-    sqlite3_close(db);
     return 0;
 }
