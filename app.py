@@ -63,8 +63,8 @@ def add_book():
     cursor = conn.cursor()
     
     # 检查ID是否重复
-    cursor.execute("SELECT COUNT(*) FROM book WHERE book_id = %s", (data['book_id'],))
-    if cursor.fetchone()[0] > 0:
+    cursor.execute("SELECT COUNT(*) as count FROM book WHERE book_id = %s", (data['book_id'],))
+    if cursor.fetchone()['count'] > 0:
         conn.close()
         return jsonify({'error': f"Book with ID {data['book_id']} already exists."}), 409 # 409 Conflict
 
@@ -180,8 +180,8 @@ def add_reader():
     cursor = conn.cursor()
 
     # 检查ID是否重复
-    cursor.execute("SELECT COUNT(*) FROM reader WHERE reader_id = %s", (data['reader_id'],))
-    if cursor.fetchone()[0] > 0:
+    cursor.execute("SELECT COUNT(*) as count FROM reader WHERE reader_id = %s", (data['reader_id'],))
+    if cursor.fetchone()['count'] > 0:
         conn.close()
         return jsonify({'error': f"Reader with ID {data['reader_id']} already exists."}), 409
 
@@ -256,8 +256,13 @@ def get_records():
     
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT reader_id, book_id, borrow_date, return_date, notes FROM record")
-            records = cursor.fetchall()
+            cursor.execute("SELECT TRIM(reader_id) as reader_id, TRIM(book_id) as book_id, borrow_date, return_date, notes FROM record")
+            records_raw = cursor.fetchall()
+            records = []
+            # Manually add a unique ID for frontend purposes
+            for i, record_raw in enumerate(records_raw):
+                record_raw['record_id'] = f"temp_{i}"
+                records.append(record_raw)
             # Convert date objects to ISO format strings for JSON
             for record in records:
                 if 'borrow_date' in record and isinstance(record['borrow_date'], datetime.date):
@@ -275,86 +280,110 @@ def get_records():
 def add_record():
     """Add a new borrow record."""
     data = request.get_json()
-    if not data or not data.get('record_id'):
-        return jsonify({'error': 'Missing record_id'}), 400
+    if not data or not data.get('book_id') or not data.get('reader_id'):
+        return jsonify({'error': 'Missing book_id or reader_id'}), 400
 
     conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # 检查ID是否重复
-    cursor.execute("SELECT COUNT(*) FROM record WHERE record_id = %s", (data['record_id'],))
-    if cursor.fetchone()[0] > 0:
-        conn.close()
-        return jsonify({'error': f"Record with ID {data['record_id']} already exists."}), 409
-
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+    
     try:
-        cursor.execute(
-            "INSERT INTO record (record_id, book_id, reader_id, borrow_date, return_date) VALUES (%s, %s, %s, %s, %s)",
-            (data['record_id'], data['book_id'], data['reader_id'], data.get('borrow_date'), data.get('return_date'))
-        )
-        conn.commit()
-        return jsonify({'message': 'Record added successfully'}), 201
+        with conn.cursor() as cursor:
+            # 检查联合主键是否重复
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM record WHERE book_id = %s AND reader_id = %s",
+                (data['book_id'], data['reader_id'])
+            )
+            if cursor.fetchone()['count'] > 0:
+                conn.close()
+                return jsonify({'error': f"Record with Book ID {data['book_id']} and Reader ID {data['reader_id']} already exists."}), 409
+
+            cursor.execute(
+                "INSERT INTO record (book_id, reader_id, borrow_date, return_date, notes) VALUES (%s, %s, %s, %s, %s)",
+                (data['book_id'], data['reader_id'], data.get('borrow_date'), data.get('return_date'), data.get('notes'))
+            )
+            conn.commit()
+            return jsonify({'message': 'Record added successfully'}), 201
     except pymssql.Error as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
-@app.route('/api/records/<int:record_id>', methods=['PUT'])
-def update_record(record_id):
-    """Update a borrow record."""
+@app.route('/api/records/<string:book_id>/<string:reader_id>', methods=['PUT'])
+def update_record(book_id, reader_id):
+    """Update a borrow record using book_id and reader_id as composite key."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
 
+    # --- 调试日志 ---
+    print(f"--- DEBUG: Updating Record ---")
+    print(f"Received book_id: '{book_id}'")
+    print(f"Received reader_id: '{reader_id}'")
+    print(f"Received data: {data}")
+    # --- 结束调试日志 ---
+
     conn = get_db_connection()
-    cursor = conn.cursor()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
 
     try:
-        update_fields = []
-        params = []
-        # 动态构建SET子句
-        for key, value in data.items():
-            if key in ['book_id', 'reader_id', 'borrow_date', 'return_date']:
-                update_fields.append(f"{key} = %s")
-                params.append(value)
+        with conn.cursor() as cursor:
+            sql = "UPDATE record SET borrow_date = %s, return_date = %s, notes = %s WHERE TRIM(book_id) = %s AND TRIM(reader_id) = %s"
+            params = (
+                data.get('borrow_date'),
+                data.get('return_date'),
+                data.get('notes'),
+                book_id,
+                reader_id
+            )
+            
+            # --- 调试日志 ---
+            print(f"Executing SQL: {sql}")
+            print(f"With Params: {params}")
+            # --- 结束调试日志 ---
 
-        if not update_fields:
-            return jsonify({"error": "No fields to update"}), 400
+            cursor.execute(sql, params)
+            conn.commit()
 
-        sql = f"UPDATE record SET {', '.join(update_fields)} WHERE record_id = %s"
-        params.append(record_id)
-        
-        cursor.execute(sql, tuple(params))
-        conn.commit()
+            # --- 调试日志 ---
+            print(f"Update executed. Rows affected: {cursor.rowcount}")
+            # --- 结束调试日志 ---
 
-        if cursor.rowcount == 0:
-            return jsonify({'error': 'Record not found or data not changed'}), 404
-        
-        return jsonify({'message': 'Record updated successfully'}), 200
+            if cursor.rowcount == 0:
+                return jsonify({'error': 'Record not found or data not changed'}), 404
+            
+            return jsonify({'message': 'Record updated successfully'}), 200
     except pymssql.Error as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
-@app.route('/api/records/<int:record_id>', methods=['DELETE'])
-def delete_record(record_id):
-    """Delete a borrow record."""
+@app.route('/api/records/<string:book_id>/<string:reader_id>', methods=['DELETE'])
+def delete_record(book_id, reader_id):
+    """Delete a borrow record using its composite key."""
     conn = get_db_connection()
-    cursor = conn.cursor()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+    
     try:
-        sql = "DELETE FROM record WHERE record_id = %s"
-        cursor.execute(sql, (record_id,))
-        conn.commit()
-        if cursor.rowcount == 0:
-            return jsonify({'error': 'Record not found'}), 404
-        return jsonify({'message': 'Record deleted successfully'}), 200
+        with conn.cursor() as cursor:
+            sql = "DELETE FROM record WHERE TRIM(book_id) = %s AND TRIM(reader_id) = %s"
+            cursor.execute(sql, (book_id, reader_id))
+            conn.commit()
+            if cursor.rowcount == 0:
+                return jsonify({'error': 'Record not found'}), 404
+            return jsonify({'message': 'Record deleted successfully'}), 200
     except pymssql.Error as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 if __name__ == '__main__':
     # Runs the app on http://127.0.0.1:8080

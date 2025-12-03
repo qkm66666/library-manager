@@ -168,7 +168,7 @@
                         <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-50">
                                 <tr>
-                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">记录ID</th>
+                                    
                                     <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">图书ID</th>
                                     <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">读者ID</th>
                                     <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">借阅日期</th>
@@ -249,6 +249,10 @@
                 <form id="readerForm" onsubmit="saveData(event, 'readers')">
                     <input type="hidden" id="readerId">
                     <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2" for="reader_id_form">读者ID</label>
+                        <input type="text" id="reader_id_form" required class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700">
+                    </div>
+                    <div class="mb-4">
                         <label class="block text-gray-700 text-sm font-bold mb-2" for="reader_name">姓名</label>
                         <input type="text" id="reader_name" required class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700">
                     </div>
@@ -260,8 +264,8 @@
                         </select>
                     </div>
                     <div class="mb-4">
-                        <label class="block text-gray-700 text-sm font-bold mb-2" for="reader_dep">部门</label>
-                        <input type="text" id="reader_dep" required class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700">
+                        <label class="block text-gray-700 text-sm font-bold mb-2" for="reader_department">部门</label>
+                        <input type="text" id="reader_department" required class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700">
                     </div>
                     <div class="flex justify-end pt-2 space-x-4">
                         <button type="button" onclick="closeModal('readerModal')" class="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg">取消</button>
@@ -414,14 +418,13 @@
                 body = {
                     reader_name: document.getElementById('reader_name').value,
                     reader_sex: document.getElementById('reader_sex').value,
-                    reader_dep: document.getElementById('reader_dep').value,
+                    reader_department: document.getElementById('reader_department').value,
                 };
                  if (isEdit) {
                     body.reader_id = id;
                     url = `${apiBaseUrl}/${type}/${id}`;
                 } else {
-                    // For new readers, you might need a dedicated ID input field if it's not auto-generated
-                    body.reader_id = `R${Date.now()}`; // Example: Generate or get from a form field
+                    body.reader_id = document.getElementById('reader_id_form').value;
                 }
             } else if (type === 'records') {
                 body = {
@@ -431,10 +434,20 @@
                     return_date: document.getElementById('return_date').value || null,
                 };
                  if (isEdit) {
-                    body.record_id = id;
-                    url = `${apiBaseUrl}/${type}/${id}`;
+                    // Since we don't have a real record_id, we use book_id and reader_id to identify the record
+                    const record = state.records.find(r => r.record_id === id);
+                    if (record && record.book_id && record.reader_id) {
+                        const original_book_id = record.book_id.trim();
+                        const original_reader_id = record.reader_id.trim();
+                        url = `${apiBaseUrl}/${type}/${original_book_id}/${original_reader_id}`;
+                    } else {
+                        console.error("Could not find original record details for update.", {id, record});
+                        alert("错误：无法找到原始记录的关键信息，无法更新。");
+                        return;
+                    }
                 } else {
-                    body.record_id = `REC${Date.now()}`; // Example: Generate or get from a form field
+                    // For new records, the backend will handle the insert.
+                    // We don't send a record_id.
                 }
             }
 
@@ -462,23 +475,33 @@
         }
 
         // 删除数据（通用）
-        function confirmDelete() {
-            const id = document.getElementById('deleteBookId').value;
-            const type = document.getElementById('deleteBookId').dataset.type;
-            if (!id || !type) return;
+        async function confirmDelete() {
+            const confirmBtn = document.getElementById('confirmDeleteBtn');
+            const type = confirmBtn.dataset.type;
+            let url;
+
+            if (type === 'records') {
+                const bookId = confirmBtn.dataset.bookId;
+                const readerId = confirmBtn.dataset.readerId;
+                url = `${apiBaseUrl}/${type}/${bookId}/${readerId}`;
+            } else {
+                const id = confirmBtn.dataset.id;
+                url = `${apiBaseUrl}/${type}/${id}`;
+            }
             
-            fetch(`${apiBaseUrl}/${type}/${id}`, { method: "DELETE" })
-                .then(response => {
-                    if (!response.ok) {
-                         return response.json().then(err => { throw new Error(err.error || '删除失败') });
-                    }
-                    closeDeleteModal();
-                    loadData(type);
-                })
-                .catch(error => {
-                    console.error(`删除${type}失败:`, error);
-                    alert("删除失败: " + error.message);
-                });
+            try {
+                const response = await fetch(url, { method: 'DELETE' });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to delete');
+                }
+                showToast('删除成功');
+                closeModal('deleteModal');
+                loadData(type);
+            } catch (error) {
+                console.error('Error deleting item:', error);
+                showToast(`删除失败: ${error.message}`, 'error');
+            }
         }
 
         function switchView(view) {
@@ -500,15 +523,45 @@
 
         document.addEventListener('DOMContentLoaded', function() {
             loadData('books');
+            // Link the confirm button in the delete modal to the confirmDelete function
+            document.getElementById('confirmDeleteBtn').addEventListener('click', confirmDelete);
         });
 
         // 打开删除确认模态框
         function openDeleteConfirmation(id, type) {
-            document.getElementById('deleteBookId').value = id;
-            document.getElementById('deleteBookId').dataset.type = type;
             const modal = document.getElementById('deleteModal');
-            modal.classList.remove('opacity-0', 'invisible');
-            document.getElementById('mainContent').classList.add('blur-background');
+            
+            let item;
+            if (type === 'records') {
+                // For records, the 'id' is the temporary 'record_id'
+                item = state[type].find(i => i.record_id === id);
+            } else {
+                // For books and readers, it's the actual ID
+                item = state[type].find(i => i[`${type.slice(0, -1)}_id`] === id);
+            }
+
+            if (!item) {
+                console.error('Item not found for deletion:', id, type);
+                return;
+            }
+
+            // Store the necessary info on the confirm button
+            const confirmBtn = document.getElementById('confirmDeleteBtn');
+            confirmBtn.dataset.type = type;
+
+            if (type === 'records') {
+                // For records, we need the composite key for the API call
+                confirmBtn.dataset.bookId = item.book_id.trim();
+                confirmBtn.dataset.readerId = item.reader_id.trim();
+            } else {
+                // For others, we use the simple ID
+                confirmBtn.dataset.id = id;
+            }
+            
+            const itemIdentifier = type === 'books' ? item.book_name : (type === 'readers' ? item.reader_name : `记录 (图书: ${item.book_id}, 读者: ${item.reader_id})`);
+            document.getElementById('deleteModalText').textContent = `您确定要删除 "${itemIdentifier}" 吗？此操作不可撤销。`;
+
+            openModal('deleteModal');
         }
 
         // 渲染图书
@@ -550,13 +603,13 @@
             const recordsBody = document.getElementById('recordsTableBody');
             recordsBody.innerHTML = '';
             if (!records || records.length === 0) {
-                recordsBody.innerHTML = `<tr><td colspan="6" class="text-center py-4">没有借阅记录</td></tr>`;
+                recordsBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">没有借阅记录</td></tr>`;
                 return;
             }
             records.forEach(record => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td class="px-6 py-4 whitespace-nowrap">${record.record_id}</td>
+                    
                     <td class="px-6 py-4 whitespace-nowrap">${record.book_id}</td>
                     <td class="px-6 py-4 whitespace-nowrap">${record.reader_id}</td>
                     <td class="px-6 py-4 whitespace-nowrap">${record.borrow_date ? new Date(record.borrow_date).toLocaleDateString() : 'N/A'}</td>
@@ -581,7 +634,7 @@
                 <div class="p-6 flex-grow flex flex-col">
                     <h3 class="text-xl font-bold truncate mb-2" title="${reader.reader_name}">${reader.reader_name} (ID: ${reader.reader_id})</h3>
                     <p class="text-gray-600 mb-1"><i class="fas fa-venus-mars text-sm mr-2"></i>${reader.reader_sex}</p>
-                    <p class="text-gray-600 mb-3"><i class="fas fa-building text-sm mr-2"></i>${reader.reader_dep}</p>
+                    <p class="text-gray-600 mb-3"><i class="fas fa-building text-sm mr-2"></i>${reader.reader_department}</p>
                     <div class="flex-grow"></div>
                     <div class="flex justify-end space-x-2 mt-4">
                         <button onclick="openEditModal('${reader.reader_id}', 'readers')" class="text-blue-600 hover:text-blue-800 transition"><i class="fas fa-edit"></i></button>
@@ -657,56 +710,36 @@
         }
 
         // 搜索
-        function searchBooks() {
-            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+        function searchData() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase().trim();
             
-            let dataToFilter = [];
             if (currentView === 'books') {
-                dataToFilter = state.books;
+                if (searchTerm === '') {
+                    state.filteredBooks = [...state.books];
+                } else {
+                    state.filteredBooks = state.books.filter(item =>
+                        (item.book_name && item.book_name.toLowerCase().includes(searchTerm)) ||
+                        (item.book_author && item.book_author.toLowerCase().includes(searchTerm)) ||
+                        (item.book_isbn && item.book_isbn.toLowerCase().includes(searchTerm)) ||
+                        (item.book_id && item.book_id.toLowerCase().includes(searchTerm))
+                    );
+                }
+                state.currentPage = 1;
+                renderBooks();
+                updateStats();
             } else if (currentView === 'readers') {
-                dataToFilter = state.readers;
+                const filteredData = searchTerm === '' ? state.readers : state.readers.filter(item =>
+                    (item.reader_name && item.reader_name.toLowerCase().includes(searchTerm)) ||
+                    (item.reader_department && item.reader_department.toLowerCase().includes(searchTerm)) ||
+                    (item.reader_id && item.reader_id.toLowerCase().includes(searchTerm))
+                );
+                renderReaders(filteredData);
             } else if (currentView === 'records') {
-                // 记录的搜索逻辑可能不同，这里暂时只支持ID搜索
-                 const filteredRecords = state.records.filter(record =>
-                    (record.record_id && record.record_id.toString().includes(searchTerm)) ||
+                const filteredData = searchTerm === '' ? state.records : state.records.filter(record =>
                     (record.book_id && record.book_id.toLowerCase().includes(searchTerm)) ||
                     (record.reader_id && record.reader_id.toLowerCase().includes(searchTerm))
                 );
-                renderRecords(filteredRecords);
-                return;
-            }
-
-            if (searchTerm.trim() === '') {
-                if (currentView === 'books') {
-                    state.filteredBooks = [...state.books];
-                }
-                renderView(currentView);
-            } else {
-                const filteredData = dataToFilter.filter(item => {
-                    if (currentView === 'books') {
-                        return (item.book_name && item.book_name.toLowerCase().includes(searchTerm)) ||
-                               (item.book_author && item.book_author.toLowerCase().includes(searchTerm)) ||
-                               (item.book_isbn && item.book_isbn.toLowerCase().includes(searchTerm));
-                    }
-                    if (currentView === 'readers') {
-                         return (item.reader_name && item.reader_name.toLowerCase().includes(searchTerm)) ||
-                               (item.reader_dep && item.reader_dep.toLowerCase().includes(searchTerm)) ||
-                               (item.reader_id && item.reader_id.toLowerCase().includes(searchTerm));
-                    }
-                    return false;
-                });
-
-                if (currentView === 'books') {
-                    state.filteredBooks = filteredData;
-                    renderBooks();
-                } else if (currentView === 'readers') {
-                    renderReaders(filteredData);
-                }
-            }
-            if (currentView === 'books') {
-                state.currentPage = 1;
-                updateStats();
-                updatePaginationControls();
+                renderRecords(filteredData);
             }
         }
 
@@ -723,6 +756,9 @@
             } else if (type === 'readers') {
                 const readerIdInput = document.getElementById('reader_id_form');
                 if(readerIdInput) readerIdInput.disabled = false;
+            } else if (type === 'records') {
+                document.getElementById('record_book_id').disabled = false;
+                document.getElementById('record_reader_id').disabled = false;
             }
 
 
@@ -749,13 +785,23 @@
                 document.getElementById('book_price').value = item.book_price;
             } else if (type === 'readers') {
                 document.getElementById('readerId').value = item.reader_id;
+                const readerIdInput = document.getElementById('reader_id_form');
+                readerIdInput.value = item.reader_id;
+                readerIdInput.disabled = true;
                 document.getElementById('reader_name').value = item.reader_name;
                 document.getElementById('reader_sex').value = item.reader_sex;
-                document.getElementById('reader_dep').value = item.reader_dep;
+                document.getElementById('reader_department').value = item.reader_department;
             } else if (type === 'records') {
                 document.getElementById('recordId').value = item.record_id;
-                document.getElementById('record_book_id').value = item.book_id;
-                document.getElementById('record_reader_id').value = item.reader_id;
+                const bookIdInput = document.getElementById('record_book_id');
+                const readerIdInput = document.getElementById('record_reader_id');
+                
+                bookIdInput.value = item.book_id.trim();
+                readerIdInput.value = item.reader_id.trim();
+                
+                bookIdInput.disabled = true;
+                readerIdInput.disabled = true;
+
                 document.getElementById('borrow_date').value = item.borrow_date.split('T')[0];
                 document.getElementById('return_date').value = item.return_date ? item.return_date.split('T')[0] : '';
             }
@@ -798,6 +844,28 @@
                 records: '记录'
             };
             return names[type] || '项目';
+        }
+
+        // Toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            const bgColor = type === 'error' ? 'bg-red-500' : 'bg-green-500';
+            toast.className = `fixed bottom-5 right-5 ${bgColor} text-white px-4 py-2 rounded-lg shadow-lg transform translate-y-20 opacity-0 transition-all duration-300`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            // Animate in
+            setTimeout(() => {
+                toast.classList.remove('translate-y-20', 'opacity-0');
+            }, 100);
+
+            // Animate out and remove
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+                setTimeout(() => {
+                    document.body.removeChild(toast);
+                }, 300);
+            }, 3000);
         }
     </script>
 </body>
