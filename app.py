@@ -10,9 +10,6 @@ app = Flask(__name__)
 # Enable CORS for all routes and origins, which is convenient for development.
 CORS(app)
 
-# --- Database Configuration ---
-# IMPORTANT: Make sure these details match your SQL Server configuration.
-
 
 def get_db_connection():
     """Establishes a connection to the database."""
