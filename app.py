@@ -52,21 +52,26 @@ def get_books():
         if conn:
             conn.close()
 
+# 修改 add_book 函数，添加更友好的错误信息
 @app.route('/api/books', methods=['POST'])
 def add_book():
     """Add a new book to the database."""
     data = request.get_json()
     if not data or not data.get('book_id'):
-        return jsonify({'error': 'Missing book_id'}), 400
+        return jsonify({'error': '图书ID不能为空'}), 400
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     # 检查ID是否重复
     cursor.execute("SELECT COUNT(*) as count FROM book WHERE book_id = %s", (data['book_id'],))
     if cursor.fetchone()['count'] > 0:
         conn.close()
-        return jsonify({'error': f"Book with ID {data['book_id']} already exists."}), 409 # 409 Conflict
+        return jsonify({
+            'error': '主键重复',
+            'message': f"图书ID '{data['book_id']}' 已存在，请使用其他ID",
+            'code': 'DUPLICATE_KEY'
+        }), 409  # 409 Conflict
 
     try:
         cursor.execute(
@@ -74,10 +79,26 @@ def add_book():
             (data['book_id'], data['book_name'], data['book_author'], data['book_isbn'], data['book_publisher'], data.get('interview_times', 0), data['book_price'])
         )
         conn.commit()
-        return jsonify({'message': 'Book added successfully'}), 201
+        return jsonify({
+            'message': '图书添加成功',
+            'book_id': data['book_id'],
+            'book_name': data['book_name']
+        }), 201
     except pymssql.Error as e:
         conn.rollback()
-        return jsonify({'error': str(e)}), 500
+        error_message = str(e)
+        if 'PRIMARY KEY' in error_message or 'duplicate' in error_message.lower():
+            return jsonify({
+                'error': '主键重复',
+                'message': '图书ID已存在，请使用其他ID',
+                'code': 'DUPLICATE_KEY'
+            }), 409
+        else:
+            return jsonify({
+                'error': '数据库错误',
+                'message': error_message,
+                'code': 'DATABASE_ERROR'
+            }), 500
     finally:
         conn.close()
 
@@ -115,7 +136,7 @@ def update_book(book_id):
                 return jsonify({"error": "Book to update not found"}), 404
             
             print(f"Book updated with ID: {book_id}")
-            return jsonify({"message": "Book updated successfully"})
+            return jsonify({"message": "更新成功"})
     except Exception as e:
         print(f"Database update failed: {e}")
         return jsonify({"error": f"Database update failed: {e}"}), 500

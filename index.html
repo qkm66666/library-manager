@@ -508,43 +508,65 @@
                     return_date: document.getElementById('return_date').value || null,
                 };
                  if (isEdit) {
-                    // Since we don't have a real record_id, we use book_id and reader_id to identify the record
                     const record = state.records.find(r => r.record_id === id);
                     if (record && record.book_id && record.reader_id) {
                         const original_book_id = record.book_id.trim();
                         const original_reader_id = record.reader_id.trim();
                         url = `${apiBaseUrl}/${type}/${original_book_id}/${original_reader_id}`;
                     } else {
-                        console.error("Could not find original record details for update.", {id, record});
-                        alert("错误：无法找到原始记录的关键信息，无法更新。");
+                        showToast('错误：无法找到原始记录的关键信息，无法更新。', 'error');
                         return;
                     }
-                } else {
-                    // For new records, the backend will handle the insert.
-                    // We don't send a record_id.
                 }
             }
+
+            // 显示加载状态
+            const saveButton = event.target.querySelector('button[type="submit"]');
+            const originalText = saveButton.innerHTML;
+            saveButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>保存中...';
+            saveButton.disabled = true;
 
             fetch(url, {
                 method: isEdit ? 'PUT' : 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             })
-            .then(response => {
+            .then(async response => {
+                const responseData = await response.json();
+
                 if (!response.ok) {
-                    return response.json().then(err => { throw new Error(err.error || '操作失败') });
+                    // 检查是否是主键重复错误
+                    if (response.status === 409) {
+                        throw new Error(responseData.message || responseData.error || '主键重复');
+                    } else {
+                        throw new Error(responseData.error || responseData.message || '操作失败');
+                    }
                 }
-                // For 201/204 responses which might not have a body
-                if (response.status === 204) return null;
-                return response.json();
+
+                return responseData;
             })
-            .then(() => {
+            .then(data => {
+                // 恢复按钮状态
+                saveButton.innerHTML = originalText;
+                saveButton.disabled = false;
+
+                // 显示成功消息
+                showToast(data.message || '保存成功', 'success');
+
+                // 关闭模态框并刷新数据
                 closeModal(`${type.slice(0, -1)}Modal`);
-                loadData(type);
+                setTimeout(() => {
+                    loadData(type);
+                }, 500);
             })
             .catch(error => {
+                // 恢复按钮状态
+                saveButton.innerHTML = originalText;
+                saveButton.disabled = false;
+
                 console.error("操作失败:", error);
-                alert("保存失败: " + error.message);
+                // 使用Toast显示错误
+                showToast(`保存失败: ${error.message}`, 'error');
             });
         }
 
@@ -822,21 +844,47 @@
             const type = currentView;
             const formId = `${type.slice(0, -1)}Form`;
             const modalId = `${type.slice(0, -1)}Modal`;
+            
+            // 重置表单
             document.getElementById(formId).reset();
             
+            // 确保清空所有隐藏的ID字段
             if (type === 'books') {
+                // 清空隐藏的bookId字段
+                document.getElementById('bookId').value = '';
                 const bookIdInput = document.getElementById('book_id_form');
                 bookIdInput.disabled = false;
+                bookIdInput.value = ''; // 确保输入框值为空
+                
+                // 清空其他可能的缓存
+                document.getElementById('book_isbn').value = '';
+                document.getElementById('book_name').value = '';
+                document.getElementById('book_author').value = '';
+                document.getElementById('book_publisher').value = '';
+                document.getElementById('book_price').value = '';
+                
             } else if (type === 'readers') {
+                document.getElementById('readerId').value = '';
                 const readerIdInput = document.getElementById('reader_id_form');
-                if(readerIdInput) readerIdInput.disabled = false;
+                if(readerIdInput) {
+                    readerIdInput.disabled = false;
+                    readerIdInput.value = '';
+                }
             } else if (type === 'records') {
+                document.getElementById('recordId').value = '';
                 document.getElementById('record_book_id').disabled = false;
                 document.getElementById('record_reader_id').disabled = false;
+                document.getElementById('record_book_id').value = '';
+                document.getElementById('record_reader_id').value = '';
             }
 
-
             document.getElementById(`${modalId}Title`).textContent = `添加 ${getChineseName(type)}`;
+            
+            // 重置保存按钮文本（如果是编辑后状态）
+            if (type === 'books') {
+                document.getElementById('saveButtonText').textContent = '保存';
+            }
+            
             openModal(modalId);
         }
 
@@ -969,42 +1017,106 @@
             });
         }
 
-        function advancedSearch(event) {
-            event.preventDefault();
-
-            const keyword = document.getElementById('search_keyword').value.trim().toLowerCase();
-            const minPrice = parseFloat(document.getElementById('min_price').value);
-            const maxPrice = parseFloat(document.getElementById('max_price').value);
+        // 修改高级搜索函数，使用后端API
+        async function advancedSearch(event) {
+            if (event) event.preventDefault();
+            
+            const keyword = document.getElementById('search_keyword').value.trim();
             const searchBy = document.querySelector('input[name="search_by"]:checked').value;
+            const minPrice = document.getElementById('min_price').value;
+            const maxPrice = document.getElementById('max_price').value;
+            
+            // 构建查询参数
+            const params = new URLSearchParams();
+            if (keyword) params.append('keyword', keyword);
+            if (searchBy) params.append('search_by', searchBy);
+            if (minPrice) params.append('min_price', minPrice);
+            if (maxPrice) params.append('max_price', maxPrice);
+            
+            try {
+                const response = await fetch(`${apiBaseUrl}/books/search?${params.toString()}`);
+                if (!response.ok) throw new Error('搜索失败');
+                
+                const result = await response.json();
+                state.books = result.data || [];
+                state.filteredBooks = [...state.books];
+                state.currentPage = 1;
+                
+                renderBooks();
+                updateStats();
+                closeModal('advancedSearchModal');
+                
+                // 显示搜索结果摘要
+                showSearchSummary(result);
+                
+            } catch (error) {
+                console.error('高级搜索失败:', error);
+                showToast(`搜索失败: ${error.message}`, 'error');
+            }
+        }
 
-            state.filteredBooks = state.books.filter(book => {
-                const matchesKeyword = (book.book_name && book.book_name.toLowerCase().includes(keyword)) ||
-                                       (book.book_author && book.book_author.toLowerCase().includes(keyword)) ||
-                                       (book.book_isbn && book.book_isbn.toLowerCase().includes(keyword)) ||
-                                       (book.book_id && book.book_id.toLowerCase().includes(keyword));
+        // 添加显示搜索结果摘要的函数
+        function showSearchSummary(result) {
+            const summary = document.createElement('div');
+            summary.className = 'bg-blue-50 border-l-4 border-blue-500 p-4 mb-4 rounded shadow-sm';
+            
+            let summaryText = '搜索结果: ';
+            
+            if (result.keyword) {
+                summaryText += `关键词 "${result.keyword}" `;
+            }
+            
+            if (result.search_by && result.search_by !== 'all') {
+                const searchTypeMap = {
+                    'title': '书名',
+                    'author': '作者',
+                    'publisher': '出版社',
+                    'isbn': 'ISBN'
+                };
+                summaryText += `(按${searchTypeMap[result.search_by]}) `;
+            }
+            
+            if (result.min_price || result.max_price) {
+                summaryText += `价格区间: `;
+                if (result.min_price) summaryText += `¥${result.min_price}以上`;
+                if (result.min_price && result.max_price) summaryText += ' - ';
+                if (result.max_price) summaryText += `¥${result.max_price}以下`;
+                summaryText += ' ';
+            }
+            
+            summaryText += `共找到 ${result.total || 0} 条结果`;
+            
+            summary.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-blue-700 font-medium">${summaryText}</p>
+                    </div>
+                    <button onclick="clearSearch()" class="text-blue-600 hover:text-blue-800 text-sm">
+                        <i class="fas fa-times mr-1"></i>清除搜索
+                    </button>
+                </div>
+            `;
+            
+            // 插入到图书列表上方
+            const booksView = document.getElementById('booksView');
+            const existingSummary = booksView.querySelector('.search-summary');
+            if (existingSummary) {
+                existingSummary.remove();
+            }
+            
+            summary.classList.add('search-summary');
+            const booksContainer = booksView.querySelector('.bg-white.rounded-lg.shadow');
+            booksView.insertBefore(summary, booksContainer);
+        }
 
-                const matchesMinPrice = !isNaN(minPrice) ? book.book_price >= minPrice : true;
-                const matchesMaxPrice = !isNaN(maxPrice) ? book.book_price <= maxPrice : true;
-
-                if (searchBy === 'all') {
-                    return matchesKeyword && matchesMinPrice && matchesMaxPrice;
-                } else if (searchBy === 'title') {
-                    return (book.book_name && book.book_name.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
-                } else if (searchBy === 'author') {
-                    return (book.book_author && book.book_author.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
-                } else if (searchBy === 'publisher') {
-                    return (book.book_publisher && book.book_publisher.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
-                } else if (searchBy === 'isbn') {
-                    return (book.book_isbn && book.book_isbn.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
-                }
-
-                return false;
-            });
-
-            state.currentPage = 1;
-            renderBooks();
-            updateStats();
-            closeModal('advancedSearchModal');
+        // 清除搜索结果
+        function clearSearch() {
+            loadData('books');
+            const booksView = document.getElementById('booksView');
+            const existingSummary = booksView.querySelector('.search-summary');
+            if (existingSummary) {
+                existingSummary.remove();
+            }
         }
     </script>
 </body>
