@@ -385,6 +385,85 @@ def delete_record(book_id, reader_id):
         if conn:
             conn.close()
 
+# 添加高级搜索图书的API端点
+@app.route('/api/books/search', methods=['GET'])
+def search_books():
+    """高级搜索图书"""
+    # 获取查询参数
+    keyword = request.args.get('keyword', '').strip()
+    search_by = request.args.get('search_by', 'all')  # all, title, author, publisher, isbn
+    min_price = request.args.get('min_price')
+    max_price = request.args.get('max_price')
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        with conn.cursor() as cursor:
+            # 基础查询
+            base_sql = "SELECT book_id, book_name, book_isbn, book_author, book_publisher, interview_times, book_price FROM book WHERE 1=1"
+            params = []
+
+            # 添加关键词搜索条件
+            if keyword:
+                if search_by == 'title':
+                    base_sql += " AND book_name LIKE %s"
+                    params.append(f'%{keyword}%')
+                elif search_by == 'author':
+                    base_sql += " AND book_author LIKE %s"
+                    params.append(f'%{keyword}%')
+                elif search_by == 'publisher':
+                    base_sql += " AND book_publisher LIKE %s"
+                    params.append(f'%{keyword}%')
+                elif search_by == 'isbn':
+                    base_sql += " AND book_isbn LIKE %s"
+                    params.append(f'%{keyword}%')
+                else:  # all
+                    base_sql += " AND (book_name LIKE %s OR book_author LIKE %s OR book_isbn LIKE %s OR book_publisher LIKE %s)"
+                    params.extend([f'%{keyword}%', f'%{keyword}%', f'%{keyword}%', f'%{keyword}%'])
+
+            # 添加价格区间筛选
+            if min_price:
+                try:
+                    min_price_float = float(min_price)
+                    base_sql += " AND book_price >= %s"
+                    params.append(min_price_float)
+                except ValueError:
+                    pass
+
+            if max_price:
+                try:
+                    max_price_float = float(max_price)
+                    base_sql += " AND book_price <= %s"
+                    params.append(max_price_float)
+                except ValueError:
+                    pass
+
+            print(f"Executing search query: {base_sql} with params: {params}")
+            cursor.execute(base_sql, tuple(params))
+            books = cursor.fetchall()
+
+            # 转换Decimal类型
+            for book in books:
+                if 'book_price' in book and isinstance(book['book_price'], decimal.Decimal):
+                    book['book_price'] = float(book['book_price'])
+
+            return jsonify({
+                "data": books,
+                "total": len(books),
+                "keyword": keyword,
+                "search_by": search_by,
+                "min_price": min_price,
+                "max_price": max_price
+            })
+    except Exception as e:
+        print(f"Database search failed: {e}")
+        return jsonify({"error": f"Database search failed: {e}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
 if __name__ == '__main__':
     # Runs the app on http://127.0.0.1:8080
     app.run(host='0.0.0.0', port=8080, debug=True)

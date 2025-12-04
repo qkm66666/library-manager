@@ -53,6 +53,11 @@
                             <i class="fas fa-search"></i>
                         </button>
                     </div>
+                    <!-- 高级搜索按钮 -->
+                    <button onclick="openAdvancedSearch()" class="bg-green-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-600 transition flex items-center">
+                        <i class="fas fa-filter mr-2"></i>
+                        高级搜索
+                    </button>
                 </div>
             </div>
         </nav>
@@ -333,6 +338,75 @@
                 </div>
                 <input type="hidden" id="deleteId">
                 <input type="hidden" id="deleteType">
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加高级搜索模态框 -->
+    <div id="advancedSearchModal" class="modal fixed inset-0 z-50 flex items-center justify-center opacity-0 invisible">
+        <div class="modal-overlay absolute inset-0 bg-black opacity-50"></div>
+        <div class="modal-container bg-white w-11/12 md:max-w-lg mx-auto rounded shadow-lg z-50 overflow-y-auto">
+            <div class="modal-close absolute top-0 right-0 cursor-pointer p-4">
+                <i class="fas fa-times text-gray-500 hover:text-gray-700" onclick="closeModal('advancedSearchModal')"></i>
+            </div>
+            <div class="modal-content py-4 px-6">
+                <div class="flex justify-between items-center pb-3">
+                    <h3 class="text-xl font-bold">高级搜索</h3>
+                </div>
+                <form id="advancedSearchForm" onsubmit="advancedSearch(event)">
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">搜索类型</label>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                            <label class="flex items-center">
+                                <input type="radio" name="search_by" value="all" checked class="mr-2">
+                                <span>全部</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="radio" name="search_by" value="title" class="mr-2">
+                                <span>书名</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="radio" name="search_by" value="author" class="mr-2">
+                                <span>作者</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="radio" name="search_by" value="publisher" class="mr-2">
+                                <span>出版社</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="radio" name="search_by" value="isbn" class="mr-2">
+                                <span>ISBN</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2" for="search_keyword">关键词</label>
+                        <input type="text" id="search_keyword" 
+                               class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                               placeholder="输入搜索关键词...">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">价格区间</label>
+                        <div class="flex space-x-2">
+                            <input type="number" id="min_price" step="0.01" min="0"
+                                   class="shadow appearance-none border rounded w-1/2 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                                   placeholder="最低价">
+                            <span class="flex items-center">至</span>
+                            <input type="number" id="max_price" step="0.01" min="0"
+                                   class="shadow appearance-none border rounded w-1/2 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                                   placeholder="最高价">
+                        </div>
+                    </div>
+                    <div class="flex justify-end pt-2 space-x-4">
+                        <button type="button" onclick="resetAdvancedSearch()" class="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition">
+                            重置
+                        </button>
+                        <button type="submit" class="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition flex items-center">
+                            <i class="fas fa-search mr-2"></i>
+                            搜索
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>
@@ -866,6 +940,71 @@
                     document.body.removeChild(toast);
                 }, 300);
             }, 3000);
+        }
+
+        // 高级搜索
+        function openAdvancedSearch() {
+            document.getElementById('search_keyword').value = '';
+            document.getElementById('min_price').value = '';
+            document.getElementById('max_price').value = '';
+
+            // Reset radio buttons
+            const radioButtons = document.querySelectorAll('input[name="search_by"]');
+            radioButtons.forEach(radio => {
+                radio.checked = (radio.value === 'all');
+            });
+
+            openModal('advancedSearchModal');
+        }
+
+        function resetAdvancedSearch() {
+            document.getElementById('search_keyword').value = '';
+            document.getElementById('min_price').value = '';
+            document.getElementById('max_price').value = '';
+
+            // Reset radio buttons
+            const radioButtons = document.querySelectorAll('input[name="search_by"]');
+            radioButtons.forEach(radio => {
+                radio.checked = (radio.value === 'all');
+            });
+        }
+
+        function advancedSearch(event) {
+            event.preventDefault();
+
+            const keyword = document.getElementById('search_keyword').value.trim().toLowerCase();
+            const minPrice = parseFloat(document.getElementById('min_price').value);
+            const maxPrice = parseFloat(document.getElementById('max_price').value);
+            const searchBy = document.querySelector('input[name="search_by"]:checked').value;
+
+            state.filteredBooks = state.books.filter(book => {
+                const matchesKeyword = (book.book_name && book.book_name.toLowerCase().includes(keyword)) ||
+                                       (book.book_author && book.book_author.toLowerCase().includes(keyword)) ||
+                                       (book.book_isbn && book.book_isbn.toLowerCase().includes(keyword)) ||
+                                       (book.book_id && book.book_id.toLowerCase().includes(keyword));
+
+                const matchesMinPrice = !isNaN(minPrice) ? book.book_price >= minPrice : true;
+                const matchesMaxPrice = !isNaN(maxPrice) ? book.book_price <= maxPrice : true;
+
+                if (searchBy === 'all') {
+                    return matchesKeyword && matchesMinPrice && matchesMaxPrice;
+                } else if (searchBy === 'title') {
+                    return (book.book_name && book.book_name.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
+                } else if (searchBy === 'author') {
+                    return (book.book_author && book.book_author.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
+                } else if (searchBy === 'publisher') {
+                    return (book.book_publisher && book.book_publisher.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
+                } else if (searchBy === 'isbn') {
+                    return (book.book_isbn && book.book_isbn.toLowerCase().includes(keyword)) && matchesMinPrice && matchesMaxPrice;
+                }
+
+                return false;
+            });
+
+            state.currentPage = 1;
+            renderBooks();
+            updateStats();
+            closeModal('advancedSearchModal');
         }
     </script>
 </body>
